@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Funding Rate Monitor (API)</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f0f0f0;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        .funding-item {
+            padding: 10px;
+            margin: 5px 0;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .funding-history {
+            display: flex;
+            gap: 10px;
+            flex-wrap: nowrap;
+        }
+        .rate-item {
+            padding: 5px;
+            background: #f5f5f5;
+            border-radius: 3px;
+            white-space: nowrap;
+        }
+        .red-alert {
+            background-color: #ffe6e6;
+            color: red;
+        }
+        #lastUpdate {
+            font-size: 0.9em;
+            color: #666;
+        }
+        #loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            color: #666;
+        }
+        #loading.active {
+            display: block;
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .error-message {
+            color: red;
+            padding: 10px;
+            background-color: #ffe6e6;
+            border-radius: 5px;
+        }
+        .change-positive { color: green; }
+        .change-negative { color: red; }
+        .controls {
+            margin: 10px 0;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        button {
+            padding: 5px 10px;
+            cursor: pointer;
+        }
+        select, input[type="url"] {
+            padding: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Top 10 Negative Funding Rates</h2>
+        <div class="controls">
+            <button id="triggerAlarm">Test Alarm</button>
+            <select id="alarmSoundSelect">
+                <option value="https://www.soundjay.com/buttons/beep-01a.mp3">Beep 1</option>
+                <option value="https://www.soundjay.com/buttons/beep-02.mp3">Beep 2</option>
+                <option value="https://www.soundjay.com/buttons/beep-07.mp3">Beep 3</option>
+            </select>
+            <input type="url" id="customAlarmSound" placeholder="Custom alarm URL">
+        </div>
+        <div id="lastUpdate"></div>
+        <div id="loading">Loading... <span class="spinner"></span></div>
+        <div id="errorMessage" class="error-message" style="display: none;"></div>
+        <div id="fundingList"></div>
+    </div>
+
+    <audio id="alertSound"></audio>
+
+    <script>
+        let previousRates = JSON.parse(localStorage.getItem('previousRates')) || {};
+        let lastRates = JSON.parse(localStorage.getItem('lastRates')) || {};
+        let rateHistory = JSON.parse(localStorage.getItem('rateHistory')) || {};
+        let currentAlarmSound = localStorage.getItem('currentAlarmSound') || 'https://www.soundjay.com/buttons/beep-01a.mp3';
+        const MAX_RETRIES = 3;
+        const RETRY_DELAY = 5000;
+        const API_ENDPOINT = 'https://fapi.binance.com/fapi/v1/premiumIndex';
+        const REFRESH_INTERVAL = 60000;
+        let lastFetchTime = 0;
+
+        const audio = document.getElementById('alertSound');
+        audio.src = currentAlarmSound;
+
+        function fetchFundingRates(retryCount = 0) {
+            const loading = document.getElementById('loading');
+            const errorMessage = document.getElementById('errorMessage');
+            
+            loading.classList.add('active');
+            errorMessage.style.display = 'none';
+
+            fetch(API_ENDPOINT, {
+                timeout: 30000
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                const fundingData = data
+                    .filter(item => item.symbol.endsWith('USDT'))
+                    .map(item => ({
+                        symbol: `${item.symbol} PERPETUAL`,
+                        rate: parseFloat(item.lastFundingRate) * 100
+                    }))
+                    .filter(item => !isNaN(item.rate));
+
+                if (fundingData.length === 0) {
+                    console.warn('No valid funding data found in API response');
+                }
+
+                fundingData.sort((a, b) => a.rate - b.rate);
+                const top10 = fundingData.slice(0, 10);
+                const currentTime = new Date().toLocaleTimeString();
+
+                const alerts = [];
+                const newLastRates = { ...previousRates };
+                
+                top10.forEach(item => {
+                    rateHistory[item.symbol] = rateHistory[item.symbol] || [];
+                    rateHistory[item.symbol].unshift({
+                        rate: item.rate,
+                        time: currentTime
+                    });
+                    if (rateHistory[item.symbol].length > 5) {
+                        rateHistory[item.symbol].pop();
+                    }
+
+                    if (previousRates[item.symbol] !== undefined) {
+                        const change = Math.abs(item.rate - previousRates[item.symbol]);
+                        if (change >= 0.2) {
+                            alerts.push(item.symbol);
+                        }
+                    }
+                    
+                    previousRates[item.symbol] = item.rate;
+                });
+
+                Object.assign(lastRates, newLastRates);
+
+                localStorage.setItem('previousRates', JSON.stringify(previousRates));
+                localStorage.setItem('lastRates', JSON.stringify(lastRates));
+                localStorage.setItem('rateHistory', JSON.stringify(rateHistory));
+
+                if (fundingData.length > 0) {
+                    displayFundingRates(top10, alerts);
+                } else {
+                    displayCachedData();
+                    errorMessage.textContent = 'No new data available, showing cached results';
+                    errorMessage.style.display = 'block';
+                }
+
+                if (alerts.length > 0) {
+                    triggerAlert(alerts);
+                }
+
+                lastFetchTime = Date.now();
+                document.getElementById('lastUpdate').textContent = 
+                    `Last updated: ${currentTime}`;
+            })
+            .catch(error => {
+                console.error('Error fetching funding rates:', error);
+                
+                if (retryCount < MAX_RETRIES) {
+                    errorMessage.textContent = `Error occurred. Retrying (${retryCount + 1}/${MAX_RETRIES})...`;
+                    errorMessage.style.display = 'block';
+                    setTimeout(() => fetchFundingRates(retryCount + 1), RETRY_DELAY);
+                    return;
+                }
+                
+                errorMessage.textContent = `Failed to load data after ${MAX_RETRIES} attempts: ${error.message}`;
+                errorMessage.style.display = 'block';
+                displayCachedData();
+            })
+            .finally(() => {
+                loading.classList.remove('active');
+            });
+        }
+
+        function displayFundingRates(data, alerts) {
+            const list = document.getElementById('fundingList');
+            list.innerHTML = '';
+            
+            data.forEach(item => {
+                const div = document.createElement('div');
+                div.className = 'funding-item';
+                
+                if (alerts.includes(item.symbol)) {
+                    div.classList.add('red-alert');
+                }
+
+                const lastRate = lastRates[item.symbol] !== undefined ? lastRates[item.symbol] : item.rate;
+                const change = item.rate - lastRate;
+                const changeClass = change >= 0 ? 'change-positive' : 'change-negative';
+                const changeText = `<span class="${changeClass}">${change >= 0 ? '+' : ''}${change.toFixed(4)}%</span>`;
+
+                const historyHtml = (rateHistory[item.symbol] || [])
+                    .map(entry => `<span class="rate-item">${entry.rate.toFixed(4)}% (${entry.time})</span>`)
+                    .join(' ');
+
+                div.innerHTML = `
+                    <span>${item.symbol}: ${item.rate.toFixed(4)}% ${changeText}</span>
+                    <div class="funding-history">${historyHtml}</div>
+                `;
+                list.appendChild(div);
+            });
+        }
+
+        function displayCachedData() {
+            const cachedData = Object.entries(previousRates)
+                .map(([symbol, rate]) => ({ symbol, rate }))
+                .sort((a, b) => a.rate - b.rate)
+                .slice(0, 10);
+                
+            if (cachedData.length > 0) {
+                displayFundingRates(cachedData, []);
+                document.getElementById('lastUpdate').textContent += ' (Showing cached data)';
+            } else {
+                document.getElementById('fundingList').innerHTML = 'No data available';
+            }
+        }
+
+        function triggerAlert(symbols) {
+            audio.src = currentAlarmSound;
+            audio.play().catch(err => console.log('Audio play failed:', err));
+            
+            const alertMessage = symbols ? 
+                `Significant change detected in:\n${symbols.join('\n')}` : 
+                'Manual alarm test';
+            if (Notification.permission === 'granted') {
+                new Notification('Funding Rate Alert', { body: alertMessage });
+            } else if (Notification.permission !== 'dened') {
+                Notification.requestPermission().then(permission => {
+                    if (permission === 'granted') {
+                        new Notification('Funding Rate Alert', { body: alertMessage });
+                    }
+                });
+            }
+        }
+
+        document.getElementById('triggerAlarm').addEventListener('click', () => {
+            triggerAlert(null);
+        });
+
+        const soundSelect = document.getElementById('alarmSoundSelect');
+        soundSelect.value = currentAlarmSound;
+        soundSelect.addEventListener('change', (e) => {
+            currentAlarmSound = e.target.value;
+            localStorage.setItem('currentAlarmSound', currentAlarmSound);
+            audio.src = currentAlarmSound;
+        });
+
+        const customSoundInput = document.getElementById('customAlarmSound');
+        customSoundInput.addEventListener('change', (e) => {
+            const newSound = e.target.value;
+            if (newSound) {
+                currentAlarmSound = newSound;
+                localStorage.setItem('currentAlarmSound', currentAlarmSound);
+                audio.src = currentAlarmSound;
+                const option = new Option(`Custom: ${newSound.slice(-10)}`, newSound);
+                soundSelect.add(option);
+                soundSelect.value = newSound;
+            }
+        });
+
+        function backgroundFetch() {
+            const now = Date.now();
+            if (now - lastFetchTime >= REFRESH_INTERVAL) {
+                fetchFundingRates();
+            }
+            setTimeout(backgroundFetch, 1000);
+        }
+
+        try {
+            fetchFundingRates();
+            backgroundFetch();
+        } catch (error) {
+            console.error('Initial fetch failed:', error);
+            displayCachedData();
+        }
+    </script>
+</body>
+</html>
