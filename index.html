@@ -80,12 +80,13 @@
             display: flex;
             gap: 10px;
             align-items: center;
+            flex-wrap: wrap;
         }
         button {
             padding: 5px 10px;
             cursor: pointer;
         }
-        select, input[type="url"] {
+        select, input[type="url"], input[type="email"] {
             padding: 5px;
         }
     </style>
@@ -101,6 +102,7 @@
                 <option value="https://www.soundjay.com/buttons/beep-07.mp3">Beep 3</option>
             </select>
             <input type="url" id="customAlarmSound" placeholder="Custom alarm URL">
+            <input type="email" id="emailInput" placeholder="Email for notifications" value="">
         </div>
         <div id="lastUpdate"></div>
         <div id="loading">Loading... <span class="spinner"></span></div>
@@ -109,23 +111,31 @@
     </div>
 
     <audio id="alertSound"></audio>
+    <script src="https://cdn.jsdelivr.net/npm/emailjs-com@3/dist/email.min.js"></script>
 
     <script>
+        (function() {
+            emailjs.init("YOUR_EMAILJS_USER_ID"); // Replace with your EmailJS User ID
+        })();
+
         let previousRates = JSON.parse(localStorage.getItem('previousRates')) || {};
         let lastRates = JSON.parse(localStorage.getItem('lastRates')) || {};
         let rateHistory = JSON.parse(localStorage.getItem('rateHistory')) || {};
         let currentAlarmSound = localStorage.getItem('currentAlarmSound') || 'https://www.soundjay.com/buttons/beep-01a.mp3';
+        let notificationEmail = localStorage.getItem('notificationEmail') || '';
         const MAX_RETRIES = 3;
         const RETRY_DELAY = 5000;
         const API_ENDPOINT = 'https://fapi.binance.com/fapi/v1/premiumIndex';
-        const REFRESH_INTERVAL = 60000; // 1 minute
-        let isFetching = false; // Prevent multiple concurrent fetches
+        const REFRESH_INTERVAL = 60000;
+        const CHANGE_THRESHOLD = 0.1; // Lowered from 0.2 to 0.1
+        let isFetching = false;
 
         const audio = document.getElementById('alertSound');
         audio.src = currentAlarmSound;
+        document.getElementById('emailInput').value = notificationEmail;
 
         function fetchFundingRates(retryCount = 0) {
-            if (isFetching) return; // Prevent overlapping fetches
+            if (isFetching) return;
             isFetching = true;
 
             const loading = document.getElementById('loading');
@@ -161,7 +171,7 @@
                 const currentTime = new Date().toLocaleTimeString();
 
                 const alerts = [];
-                const newLastRates = { ...lastRates }; // Store rates from previous fetch
+                const newLastRates = { ...lastRates };
                 
                 top10.forEach(item => {
                     rateHistory[item.symbol] = rateHistory[item.symbol] || [];
@@ -175,13 +185,13 @@
 
                     if (previousRates[item.symbol] !== undefined) {
                         const change = Math.abs(item.rate - previousRates[item.symbol]);
-                        if (change >= 0.2) {
+                        if (change >= CHANGE_THRESHOLD) {
                             alerts.push(item.symbol);
                         }
                     }
                     
-                    lastRates[item.symbol] = previousRates[item.symbol]; // Store previous rate
-                    previousRates[item.symbol] = item.rate; // Update current rate
+                    lastRates[item.symbol] = previousRates[item.symbol];
+                    previousRates[item.symbol] = item.rate;
                 });
 
                 localStorage.setItem('previousRates', JSON.stringify(previousRates));
@@ -267,12 +277,15 @@
         }
 
         function triggerAlert(symbols) {
+            // Play audio
             audio.src = currentAlarmSound;
-            audio.play().catch(err => console.log('Audio play failed:', err));
-            
+            audio.play().catch(err => console.error('Audio play failed:', err));
+
             const alertMessage = symbols ? 
                 `Significant change detected in:\n${symbols.join('\n')}` : 
                 'Manual alarm test';
+
+            // Browser notification
             if (Notification.permission === 'granted') {
                 new Notification('Funding Rate Alert', { body: alertMessage });
             } else if (Notification.permission !== 'denied') {
@@ -281,6 +294,17 @@
                         new Notification('Funding Rate Alert', { body: alertMessage });
                     }
                 });
+            }
+
+            // Email notification
+            if (notificationEmail) {
+                emailjs.send('YOUR_SERVICE_ID', 'YOUR_TEMPLATE_ID', {
+                    to_email: notificationEmail,
+                    message: alertMessage,
+                    symbol: symbols ? symbols.join(', ') : 'Test'
+                })
+                .then(() => console.log('Email sent successfully'))
+                .catch(err => console.error('Email send failed:', err));
             }
         }
 
@@ -309,15 +333,19 @@
             }
         });
 
-        // Precise 1-minute refresh
+        const emailInput = document.getElementById('emailInput');
+        emailInput.addEventListener('change', (e) => {
+            notificationEmail = e.target.value;
+            localStorage.setItem('notificationEmail', notificationEmail);
+        });
+
         function startRefreshCycle() {
-            fetchFundingRates(); // Initial fetch
+            fetchFundingRates();
             setInterval(() => {
                 fetchFundingRates();
             }, REFRESH_INTERVAL);
         }
 
-        // Start the cycle
         try {
             startRefreshCycle();
         } catch (error) {
