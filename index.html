@@ -118,13 +118,16 @@
         const MAX_RETRIES = 3;
         const RETRY_DELAY = 5000;
         const API_ENDPOINT = 'https://fapi.binance.com/fapi/v1/premiumIndex';
-        const REFRESH_INTERVAL = 60000;
-        let lastFetchTime = 0;
+        const REFRESH_INTERVAL = 60000; // 1 minute
+        let isFetching = false; // Prevent multiple concurrent fetches
 
         const audio = document.getElementById('alertSound');
         audio.src = currentAlarmSound;
 
         function fetchFundingRates(retryCount = 0) {
+            if (isFetching) return; // Prevent overlapping fetches
+            isFetching = true;
+
             const loading = document.getElementById('loading');
             const errorMessage = document.getElementById('errorMessage');
             
@@ -158,7 +161,7 @@
                 const currentTime = new Date().toLocaleTimeString();
 
                 const alerts = [];
-                const newLastRates = { ...previousRates };
+                const newLastRates = { ...lastRates }; // Store rates from previous fetch
                 
                 top10.forEach(item => {
                     rateHistory[item.symbol] = rateHistory[item.symbol] || [];
@@ -177,10 +180,9 @@
                         }
                     }
                     
-                    previousRates[item.symbol] = item.rate;
+                    lastRates[item.symbol] = previousRates[item.symbol]; // Store previous rate
+                    previousRates[item.symbol] = item.rate; // Update current rate
                 });
-
-                Object.assign(lastRates, newLastRates);
 
                 localStorage.setItem('previousRates', JSON.stringify(previousRates));
                 localStorage.setItem('lastRates', JSON.stringify(lastRates));
@@ -198,7 +200,6 @@
                     triggerAlert(alerts);
                 }
 
-                lastFetchTime = Date.now();
                 document.getElementById('lastUpdate').textContent = 
                     `Last updated: ${currentTime}`;
             })
@@ -218,6 +219,7 @@
             })
             .finally(() => {
                 loading.classList.remove('active');
+                isFetching = false;
             });
         }
 
@@ -273,7 +275,7 @@
                 'Manual alarm test';
             if (Notification.permission === 'granted') {
                 new Notification('Funding Rate Alert', { body: alertMessage });
-            } else if (Notification.permission !== 'dened') {
+            } else if (Notification.permission !== 'denied') {
                 Notification.requestPermission().then(permission => {
                     if (permission === 'granted') {
                         new Notification('Funding Rate Alert', { body: alertMessage });
@@ -307,17 +309,17 @@
             }
         });
 
-        function backgroundFetch() {
-            const now = Date.now();
-            if (now - lastFetchTime >= REFRESH_INTERVAL) {
+        // Precise 1-minute refresh
+        function startRefreshCycle() {
+            fetchFundingRates(); // Initial fetch
+            setInterval(() => {
                 fetchFundingRates();
-            }
-            setTimeout(backgroundFetch, 1000);
+            }, REFRESH_INTERVAL);
         }
 
+        // Start the cycle
         try {
-            fetchFundingRates();
-            backgroundFetch();
+            startRefreshCycle();
         } catch (error) {
             console.error('Initial fetch failed:', error);
             displayCachedData();
